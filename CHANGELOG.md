@@ -16,6 +16,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   the limit), so a reused isolate cannot grow until it dies. `TURBO_MAX_HEAP_MB` sets the per-isolate
   limit, `TURBO_HEAP_LOG` prints the heap after every file and `TURBO_PROGRESS` prints each file's
   result as it finishes (the summary only prints at the end). Part of #79.
+- `vi.fn()`/`vi.spyOn()` spies were registered in a strong, never-truncated array, and a spy keeps the
+  arguments and receiver of every call, so under isolate reuse the props, React elements and DOM nodes
+  of every test of every finished file stayed reachable until the worker ended. The registry behind
+  `vi.clearAllMocks`/`resetAllMocks`/`restoreAllMocks` now holds spies weakly and a finished file's
+  spies have their call history cleared at the file boundary. Part of #79.
 
 ### Release procedure
 
