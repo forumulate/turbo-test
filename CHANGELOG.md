@@ -18,6 +18,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   decode. Both fixed. `readdirSync`/`fs.promises.readdir` now also take URL objects, return `Dirent`s for
   `{ withFileTypes: true }` (`isFile`/`isDirectory`/`isSymbolicLink`, `name`, `parentPath`), support
   `{ recursive: true }` and throw `ENOENT`/`ENOTDIR` like Node instead of returning `[]`. Part of #79.
+### Fixed
+
+- SVG elements (and MathML ones, where they have their own interface) had no `style`: only
+  `HTMLElement` carried the inline `CSSStyleDeclaration`, so `svg.style.flex = '1'` threw
+  "Cannot set properties of undefined" — React sets inline styles on `<svg>` icons everywhere.
+  `SVGElement.prototype.style` now returns the same live inline declaration (and `style = text`
+  forwards to `cssText`), defined just before `attributeStyleMap` to keep Chrome's member order.
+  Part of #79.
 
 ### Release procedure
 
