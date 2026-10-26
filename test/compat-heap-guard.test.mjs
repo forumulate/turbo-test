@@ -52,3 +52,12 @@ test('a file that runs out of memory fails alone and the run continues', () => {
   assert.notEqual(r.code, 0, 'the failed file must fail the run');
   assert.match(r.out, /JavaScript heap out of memory/);
 });
+
+test('the call history of a finished file is released, so spies do not grow a reused isolate', () => {
+  // 12 files x ~60 MB of recorded call arguments under a 400 MB cap, and recycling disabled: only
+  // dropping each file's history keeps the isolate under the cap.
+  const r = run('heap-spies', { TURBO_MAX_HEAP_MB: '400', TURBO_HEAP_RECYCLE_MB: '100000' });
+  assert.equal(r.signal, null, `the process died:\n${r.err.slice(-2000)}`);
+  assert.equal(Object.values(r.files).filter((v) => v === 'PASS').length, 12, `${r.out}\n${r.err.slice(-2000)}`);
+  assert.equal(r.code, 0);
+});
