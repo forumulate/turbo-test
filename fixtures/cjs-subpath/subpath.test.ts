@@ -13,3 +13,9 @@ describe('named imports from a CJS exports subpath', () => {
     expect(reexported).toBe('from-helper');
   });
 });
+
+describe('setup file named import', () => {
+  it('ran', () => {
+    expect((globalThis as any).__setupBlockFields).toEqual(['title', 'body']);
+  });
+});
