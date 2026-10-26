@@ -201,6 +201,74 @@ pub(super) fn pin_callback_owners<'s>(
     pins
 }
 
+/// Above this many live wrappers a mutating DOM call stops reconciling ownership on its own.
+/// A reconcile is O(wrappers) in Rust and allocates a V8 Map per ownership component, so
+/// reconciling after EVERY call made a render that touches n nodes cost O(n^2): one React file
+/// with a few thousand nodes spent >90% of its time here (profiled with `sample`). Small trees
+/// (every GC-exactness test) stay on the exact per-call path.
+const EAGER_WRAPPER_LIMIT: usize = 256;
+/// Past the limit, reconcile once per `wrappers / DEFER_DIVISOR` mutating calls: amortised O(1)
+/// ownership work per call instead of O(wrappers).
+const DEFER_DIVISOR: usize = 32;
+/// Bound on wrappers pinned while reconciles are deferred (see `reconcile_after_call`).
+const MAX_PINNED: usize = 4096;
+
+thread_local! {
+    static DEFERRED_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Receivers/arguments of calls whose reconcile was deferred. Their wrappers (and, through the
+    /// component edges, every wrapper of the subtree they were last known to own) stay strongly
+    /// reachable until the pending reconcile has re-derived ownership, so a node that was just
+    /// attached cannot lose its wrapper (and expandos, e.g. React's fiber pointers) to a GC that
+    /// lands between the mutation and the reconcile.
+    static DEFERRED_PINS: std::cell::RefCell<Vec<v8::Global<v8::Object>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Epilogue of every mutating native call: reconcile now (small trees, exact), or batch.
+pub(super) fn reconcile_after_call<'a>(
+    scope: &mut v8::PinScope,
+    objects: impl IntoIterator<Item = v8::Local<'a, v8::Value>>,
+) {
+    let wrappers = DOM.with(|state| {
+        let state = state.borrow();
+        let state = state.as_ref()?;
+        state.ownership_dirty.then_some(state.cache.len())
+    });
+    let Some(wrappers) = wrappers.filter(|n| *n > EAGER_WRAPPER_LIMIT) else {
+        return flush(scope);
+    };
+    let pinned = DEFERRED_PINS.with(|pins| {
+        let mut pins = pins.borrow_mut();
+        for value in objects {
+            if let Ok(object) = v8::Local::<v8::Object>::try_from(value) {
+                pins.push(v8::Global::new(scope, object));
+            }
+        }
+        pins.len()
+    });
+    let calls = DEFERRED_CALLS.with(|calls| {
+        calls.set(calls.get() + 1);
+        calls.get()
+    });
+    if calls >= wrappers / DEFER_DIVISOR || pinned >= MAX_PINNED {
+        flush(scope);
+    }
+}
+
+/// Drop the deferral state with the DOM it belonged to (`browser_env::reset`).
+pub(super) fn forget_deferred() {
+    let _ = DEFERRED_CALLS.try_with(|calls| calls.set(0));
+    let _ = DEFERRED_PINS.try_with(|pins| pins.borrow_mut().clear());
+}
+
+/// Reconcile ownership immediately and release the deferral pins. The event loop calls this
+/// between tasks so nothing stays deferred once control leaves a synchronous run of DOM calls.
+pub(super) fn flush(scope: &mut v8::PinScope) {
+    reconcile_all(scope);
+    DEFERRED_CALLS.with(|calls| calls.set(0));
+    DEFERRED_PINS.with(|pins| pins.borrow_mut().clear());
+}
+
 pub(super) fn reconcile_all(scope: &mut v8::PinScope) {
     if scope.is_execution_terminating() {
         return;
