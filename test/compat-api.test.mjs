@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -80,7 +81,9 @@ test('it.fails passes only when the test body throws', () => {
 test('node:fs readdirSync lists names, Dirents and recursive trees; relative URLs resolve', () => {
   const r = run(['--reporter', 'json', file('fs-readdir.test.ts')]);
   const j = parseJson(r.out);
-  assert.equal(j.numPassedTests, 7, r.out + r.err + run([file('fs-readdir.test.ts')], {}).out + runIn(ROOT, [file('fs-readdir.test.ts')], { env: { ...process.env, TURBO_CJS_DEBUG: '1' } }).err);
+  const cdir = path.join(os.tmpdir(), 'turbo-test-cache');
+  const dump = fs.readdirSync(cdir).map((f) => [f, fs.readFileSync(path.join(cdir, f), 'utf8')]).filter(([, t]) => t.includes('readdir-tree')).map(([f, t]) => f + '\n' + t.slice(0, 1500)).join('\n----\n');
+  assert.equal(j.numPassedTests, 7, r.out + r.err + dump);
   assert.equal(j.numFailedTests, 0);
 });
 
