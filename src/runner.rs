@@ -4327,6 +4327,7 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
         let isolate = &mut v8::Isolate::new(params);
         isolate.set_host_initialize_import_meta_object_callback(import_meta_callback);
         isolate.set_host_import_module_dynamically_callback(dynamic_import_callback);
+        crate::browser_env::track_gc(isolate);
         // Coverage: attach an inspector to this isolate BEFORE entering scopes (needs &mut isolate).
         let mut collector =
             crate::coverage::enabled().then(|| crate::coverage::Collector::new(isolate));
@@ -4517,6 +4518,7 @@ fn run_test_file_reused(
             let mut isolate = v8::Isolate::new(params);
             isolate.set_host_initialize_import_meta_object_callback(import_meta_callback);
             isolate.set_host_import_module_dynamically_callback(dynamic_import_callback);
+            crate::browser_env::track_gc(&mut isolate);
             *iso_cell.borrow_mut() = Some(isolate);
         }
     });
