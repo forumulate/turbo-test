@@ -2879,7 +2879,7 @@ fn module_source(abs: &Path, prefer_metadata: bool) -> Option<&'static ModuleSou
     let cc_path = cc_path(&wrapped);
     let ascii = wrapped.is_ascii();
     let source: &'static ModuleSource = Box::leak(Box::new(ModuleSource {
-        wrapped: Box::leak(wrapped.into_boxed_str()),
+        wrapped: &*Box::leak(wrapped.into_boxed_str()),
         ascii,
         cc_path,
         cc: std::sync::Mutex::new(None),
@@ -2912,7 +2912,8 @@ fn compile_cjs_cached<'s>(
         if slot.is_none() {
             if let Ok(bytes) = std::fs::read(&module.cc_path) {
                 if !bytes.is_empty() {
-                    *slot = Some(Box::leak(bytes.into_boxed_slice()));
+                    let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+                    *slot = Some(leaked);
                 }
             }
         }
@@ -2932,7 +2933,8 @@ fn compile_cjs_cached<'s>(
     let script = sc::compile(scope, &mut source, sc::CompileOptions::NoCompileOptions, sc::NoCacheReason::NoReason)?;
     if let Some(cc) = script.get_unbound_script(scope).create_code_cache() {
         write_atomic_bytes(&module.cc_path, &cc);
-        *module.cc.lock().unwrap() = Some(Box::leak(cc.to_vec().into_boxed_slice()));
+        let leaked: &'static [u8] = Box::leak(cc.to_vec().into_boxed_slice());
+        *module.cc.lock().unwrap() = Some(leaked);
     }
     Some(script)
 }
