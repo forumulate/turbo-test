@@ -77,6 +77,12 @@ test('it.fails passes only when the test body throws', () => {
   assert.equal(j.numFailedTests, 0);
 });
 
+test('vi.dynamicImportSettled waits for in-flight import()s', () => {
+  const j = parseJson(run(['--reporter', 'json', file('dynamic-import-settled.test.ts')]).out);
+  assert.equal(j.numPassedTests, 3);
+  assert.equal(j.numFailedTests, 0);
+});
+
 test('describe.skipIf / runIf / concurrent / todo', () => {
   const j = parseJson(run(['--reporter', 'json', file('describe-variants.test.ts')]).out);
   // only the 3 included blocks run (2 skipped blocks contribute nothing); todo registers nothing
