@@ -2300,12 +2300,16 @@ fn postprocess_mr_cjs(mut code: String) -> String {
         "var __toESM = ",
         "var __toESM = (m) => (m && m.__esModule ? m : (m && (typeof m === \"object\" || typeof m === \"function\") && !(\"default\" in m) && Object.defineProperty(m, \"default\", { value: m, configurable: true }), m)); var __toESM_unused = ",
     );
-    // esbuild --format=cjs emits `var import_meta = {};`, so import.meta.url/dirname/filename were
+    // esbuild --format=cjs emits an empty `import_meta`, so import.meta.url/dirname/filename were
     // undefined in every test file (new URL('./x', import.meta.url) threw "Invalid URL"). Fill them
     // from the CJS wrapper's __filename/__dirname.
-    if let Some(at) = code.find("var import_meta = {};") {
+    // (esbuild writes `const` for transforms and `var` for bundles.)
+    let meta_decl = ["const import_meta = {};", "var import_meta = {};"]
+        .into_iter()
+        .find_map(|d| code.find(d).map(|at| (at, d.len())));
+    if let Some((at, len)) = meta_decl {
         code.replace_range(
-            at..at + "var import_meta = {};".len(),
+            at..at + len,
             "var import_meta = { url: \"file://\" + (__filename[0] === \"/\" ? \"\" : \"/\") + __filename.replace(/\\\\/g, \"/\"), filename: __filename, dirname: __dirname };",
         );
     }
