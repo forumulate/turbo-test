@@ -80,7 +80,7 @@ test('it.fails passes only when the test body throws', () => {
 test('node:fs readdirSync lists names, Dirents and recursive trees; relative URLs resolve', () => {
   const r = run(['--reporter', 'json', file('fs-readdir.test.ts')]);
   const j = parseJson(r.out);
-  assert.equal(j.numPassedTests, 7, r.out + r.err + run([file('fs-readdir.test.ts')]).out);
+  assert.equal(j.numPassedTests, 7, r.out + r.err + run([file('fs-readdir.test.ts')], {}).out + runIn(ROOT, [file('fs-readdir.test.ts')], { env: { ...process.env, TURBO_CJS_DEBUG: '1' } }).err);
   assert.equal(j.numFailedTests, 0);
 });
 
