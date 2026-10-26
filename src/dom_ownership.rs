@@ -269,12 +269,46 @@ pub(super) fn flush(scope: &mut v8::PinScope) {
     DEFERRED_PINS.with(|pins| pins.borrow_mut().clear());
 }
 
+thread_local! {
+    static GC_TRACKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static GC_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SWEPT_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+unsafe extern "C" fn gc_epilogue(
+    _isolate: v8::UnsafeRawIsolatePtr,
+    _type: v8::GCType,
+    _flags: v8::GCCallbackFlags,
+    _data: *mut std::ffi::c_void,
+) {
+    GC_EPOCH.with(|epoch| epoch.set(epoch.get() + 1));
+}
+
+/// Let `reconcile_all` skip its collected-listener/document sweeps until a GC has run. Those
+/// sweeps look for weak handles V8 has cleared, which only happens during a GC, yet they ran after
+/// every native call and walk every registered listener: `sweep_collected_listeners` was the top
+/// Rust frame when profiling a React suite. Call once per isolate; an isolate that never calls it
+/// keeps sweeping every time (what embedders' GC-exactness tests rely on).
+pub(super) fn track_gc(isolate: &mut v8::Isolate) {
+    isolate.add_gc_epilogue_callback(gc_epilogue, std::ptr::null_mut(), v8::GCType::kGCTypeAll);
+    GC_TRACKED.with(|tracked| tracked.set(true));
+}
+
+/// False only when GC tracking is on and no GC has run since the last sweep.
+fn collected_since_sweep() -> bool {
+    !GC_TRACKED.with(|tracked| tracked.get())
+        || GC_EPOCH.with(|epoch| epoch.get()) != SWEPT_EPOCH.with(|swept| swept.get())
+}
+
 pub(super) fn reconcile_all(scope: &mut v8::PinScope) {
     if scope.is_execution_terminating() {
         return;
     }
-    super::event_listeners::sweep_collected_listeners(scope);
-    sweep_collected();
+    if collected_since_sweep() {
+        SWEPT_EPOCH.with(|swept| swept.set(GC_EPOCH.with(|epoch| epoch.get())));
+        super::event_listeners::sweep_collected_listeners(scope);
+        sweep_collected();
+    }
     let current = DOM_ID.with(|id| id.get());
     let mut owners = OTHER_DOMS.with(|states| {
         states

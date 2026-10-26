@@ -7394,6 +7394,11 @@ pub fn native_document_count_for_testing() -> usize {
     }) + DOM.with(|state| usize::from(state.borrow().is_some()))
 }
 
+/// Register GC tracking on a worker isolate so the DOM's ownership sweeps only run after a GC.
+pub fn track_gc(isolate: &mut v8::Isolate) {
+    dom_ownership::track_gc(isolate);
+}
+
 /// Reconcile any deferred ownership work now (see `dom_ownership::reconcile_after_call`).
 /// Hosts call this whenever control returns to their event loop.
 pub fn flush_ownership(scope: &mut v8::PinScope) {
