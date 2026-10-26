@@ -80,7 +80,7 @@ test('it.fails passes only when the test body throws', () => {
 test('vi.dynamicImportSettled waits for in-flight import()s', () => {
   const r = run(['--reporter', 'json', file('dynamic-import-settled.test.ts')]);
   const j = parseJson(r.out);
-  assert.equal(j.numPassedTests, 3, r.out + r.err);
+  assert.equal(j.numPassedTests, 3, r.out + r.err + run([file('dynamic-import-settled.test.ts')]).out);
   assert.equal(j.numFailedTests, 0);
 });
 
