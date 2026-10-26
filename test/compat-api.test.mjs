@@ -81,6 +81,10 @@ test('vi.dynamicImportSettled waits for in-flight import()s', () => {
   const r = run(['--reporter', 'json', file('dynamic-import-settled.test.ts')]);
   const j = parseJson(r.out);
   assert.equal(j.numPassedTests, 3, r.out + r.err);
+test('node:fs readdirSync lists names, Dirents and recursive trees; relative URLs resolve', () => {
+  const r = run(['--reporter', 'json', file('fs-readdir.test.ts')]);
+  const j = parseJson(r.out);
+  assert.equal(j.numPassedTests, 7, r.out + r.err);
   assert.equal(j.numFailedTests, 0);
 });
 

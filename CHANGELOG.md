@@ -10,6 +10,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 - `vi.dynamicImportSettled()`: resolves once every in-flight dynamic `import()` has settled. The
   native import hook reports each import promise to the runtime, which waits (looping, since an
   import can start another) instead of the method being absent. Part of #79.
+### Fixed
+
+- `node:fs` `readdirSync` returned `[]` for any directory reached through
+  `new URL('./dir', import.meta.url)`: the URL polyfill appended a relative reference to the whole
+  base (`file:///a/b.test.ts/./dir`) instead of resolving it (RFC 3986), and `fileURLToPath` did not
+  decode. Both fixed. `readdirSync`/`fs.promises.readdir` now also take URL objects, return `Dirent`s for
+  `{ withFileTypes: true }` (`isFile`/`isDirectory`/`isSymbolicLink`, `name`, `parentPath`), support
+  `{ recursive: true }` and throw `ENOENT`/`ENOTDIR` like Node instead of returning `[]`. Part of #79.
 
 ### Release procedure
 
