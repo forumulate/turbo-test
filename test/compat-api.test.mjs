@@ -85,6 +85,10 @@ test('node:fs readdirSync lists names, Dirents and recursive trees; relative URL
   const r = run(['--reporter', 'json', file('fs-readdir.test.ts')]);
   const j = parseJson(r.out);
   assert.equal(j.numPassedTests, 7, r.out + r.err);
+test('named ESM imports through an exports subpath that targets tsc-emitted CJS', () => {
+  const dir = path.join(ROOT, 'fixtures', 'cjs-subpath');
+  const j = parseJson(runIn(dir, ['--reporter', 'json', path.join(dir, 'subpath.test.ts')]).out);
+  assert.equal(j.numPassedTests, 3, JSON.stringify(j));
   assert.equal(j.numFailedTests, 0);
 });
 
