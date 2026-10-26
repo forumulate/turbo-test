@@ -81,15 +81,23 @@ test('vi.dynamicImportSettled waits for in-flight import()s', () => {
   const r = run(['--reporter', 'json', file('dynamic-import-settled.test.ts')]);
   const j = parseJson(r.out);
   assert.equal(j.numPassedTests, 3, r.out + r.err);
+  assert.equal(j.numFailedTests, 0);
+});
+
 test('node:fs readdirSync lists names, Dirents and recursive trees; relative URLs resolve', () => {
   const r = run(['--reporter', 'json', file('fs-readdir.test.ts')]);
   const j = parseJson(r.out);
   assert.equal(j.numPassedTests, 7, r.out + r.err);
+  assert.equal(j.numFailedTests, 0);
+});
+
 test('named ESM imports through an exports subpath that targets tsc-emitted CJS', () => {
   const dir = path.join(ROOT, 'fixtures', 'cjs-subpath');
   const j = parseJson(runIn(dir, ['--reporter', 'json', path.join(dir, 'subpath.test.ts')]).out);
   assert.equal(j.numPassedTests, 3, JSON.stringify(j));
   assert.equal(j.numFailedTests, 0);
+});
+
 test('a SyntaxError while loading a file is a reported load error, never a V8 abort', () => {
   const dir = path.join(FIX, 'load-errors');
   for (const bad of ['imports-broken.test.ts', 'mock-syntax-error.test.ts']) {
