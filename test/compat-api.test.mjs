@@ -87,6 +87,11 @@ test('a SyntaxError while loading a file is a reported load error, never a V8 ab
     const j = parseJson(r.out);
     assert.equal(j.numPassedTests, 1, `${bad}: the healthy file still reports its test`);
   }
+  // a setup file (ESM graph) importing a module that does not compile
+  const sd = path.join(dir, 'setup-case');
+  const s = runIn(sd, ['--reporter', 'json', path.join(sd, 'setup-broken.test.ts')]);
+  assert.notEqual(s.code, null, `setup file SyntaxError killed the process by signal\n${s.out}\n${s.err}`);
+  assert.doesNotMatch(s.out + s.err, /Fatal error|has_exception/);
 });
 
 test('describe.skipIf / runIf / concurrent / todo', () => {
