@@ -82,7 +82,7 @@ test('node:fs readdirSync lists names, Dirents and recursive trees; relative URL
   const r = run(['--reporter', 'json', file('fs-readdir.test.ts')]);
   const j = parseJson(r.out);
   const cdir = path.join(os.tmpdir(), 'turbo-test-cache');
-  const dump = fs.readdirSync(cdir).map((f) => [f, fs.readFileSync(path.join(cdir, f), 'utf8')]).filter(([, t]) => t.includes('readdir-tree')).map(([f, t]) => f + '\n' + t.slice(0, 1500)).join('\n----\n');
+  const dump = fs.readdirSync(cdir).map((f) => [f, fs.readFileSync(path.join(cdir, f), 'utf8')]).filter(([, t]) => t.includes('readdir-tree')).map(([f, t]) => f + '\n' + t.split('\n').filter((l) => /readdir-tree|meta/i.test(l)).join('\n')).join('\n----\n');
   assert.equal(j.numPassedTests, 7, r.out + r.err + dump);
   assert.equal(j.numFailedTests, 0);
 });
