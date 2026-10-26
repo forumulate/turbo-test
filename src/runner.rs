@@ -4909,6 +4909,9 @@ fn drive_tests(
                 break;
             }
         }
+        // Control is back in the host loop: settle any DOM ownership work a long run of mutating
+        // calls deferred (browser_env::flush_ownership), before the next task observes it.
+        crate::browser_env::flush_ownership(scope);
         if promise.state() != v8::PromiseState::Pending {
             break;
         }
