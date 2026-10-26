@@ -29,6 +29,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ### Fixed
 
 - Named ESM imports from a workspace package whose `exports` subpath points at tsc-emitted CommonJS failed with "does not provide an export named". `detect_kind` sniffed the file as ESM because a doc comment contained `import `/`export `; only line-leading statements count now, and `Object.defineProperty(exports, ...)` marks CJS. Part of #79.
+### Fixed
+
+- A module that failed to load (SyntaxError in an imported file or a mock factory) could abort the whole process with `Check failed: has_exception()`: the module resolve callback returned nothing without a pending exception. It now throws "failed to load module ..." so the file is reported as a load error. Part of #79.
 
 ### Release procedure
 
