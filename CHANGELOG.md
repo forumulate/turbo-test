@@ -33,6 +33,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   cache for each file (about 15% of a worker's time on a React suite). Wrapped sources and code
   cache bytes are now kept for the life of the process and handed to V8 as external one-byte strings
   when ASCII, so every isolate shares one copy. Part of #79.
+- `vi.fn()`/`vi.spyOn()` spies were registered in a strong, never-truncated array, and a spy keeps the
+  arguments and receiver of every call, so under isolate reuse the props, React elements and DOM nodes
+  of every test of every finished file stayed reachable until the worker ended. The registry behind
+  `vi.clearAllMocks`/`resetAllMocks`/`restoreAllMocks` now holds spies weakly and a finished file's
+  spies have their call history cleared at the file boundary. Part of #79.
 - `node:fs` `readdirSync` returned `[]` for any directory reached through
   `new URL('./dir', import.meta.url)`: the URL polyfill appended a relative reference to the whole
   base (`file:///a/b.test.ts/./dir`) instead of resolving it (RFC 3986), and `fileURLToPath` did not
