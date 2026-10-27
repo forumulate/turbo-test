@@ -20,7 +20,7 @@ describe('large DOM trees', () => {
       host.appendChild(row);
     }
     expect(host.children.length).toBe(2000);
-    for (let i = 0; i < 2000; i += 2) host.children[i].remove();
+    for (let i = 1998; i >= 0; i -= 2) host.children[i].remove(); // back to front: indexes shift
     expect(host.children.length).toBe(1000);
     expect(Date.now() - started).toBeLessThan(20_000);
   });
