@@ -13,6 +13,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ### Fixed
 
+- Fresh-isolate mode re-read, re-hashed and re-copied every module's transformed source and V8 code
+  cache for each file (about 15% of a worker's time on a React suite). Wrapped sources and code
+  cache bytes are now kept for the life of the process and handed to V8 as external one-byte strings
+  when ASCII, so every isolate shares one copy. Part of #79.
 - `node:fs` `readdirSync` returned `[]` for any directory reached through
   `new URL('./dir', import.meta.url)`: the URL polyfill appended a relative reference to the whole
   base (`file:///a/b.test.ts/./dir`) instead of resolving it (RFC 3986), and `fileURLToPath` did not
