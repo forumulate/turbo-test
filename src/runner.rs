@@ -480,15 +480,21 @@ fn detect_kind(path: &Path) -> Kind {
             Some("commonjs") => Kind::Cjs,
             _ => {
                 let src = std::fs::read_to_string(path).unwrap_or_default();
-                let esm = src.contains("import ")
-                    || src.contains("import{")
-                    || src.contains("export ")
+                // Only a statement that STARTS a line counts as ESM syntax: tsc-emitted CJS routinely
+                // mentions "import "/"export " inside doc comments, and a substring match classified a
+                // workspace package's CommonJS as ESM, whose synthetic namespace has no named exports
+                // ("does not provide an export named ..."). Compact forms keep the substring test.
+                let esm = src.lines().any(|l| {
+                    let t = l.trim_start();
+                    t.starts_with("import ") || t.starts_with("export ")
+                }) || src.contains("import{")
                     || src.contains("export{")
-                    || src.contains("export*")
-                    || src.contains("export default");
+                    || src.contains("export*");
+                // tsc emits re-exports and __esModule as Object.defineProperty(exports, ...)
                 let cjs = src.contains("module.exports")
                     || src.contains("exports.")
                     || src.contains("exports[")
+                    || src.contains("Object.defineProperty(exports")
                     || src.contains("require(");
                 if cjs && !esm {
                     Kind::Cjs
@@ -836,7 +842,34 @@ fn project_root_uncached(file: &Path) -> Option<PathBuf> {
         }
         d = dir.parent();
     }
+    // No project-local esbuild: pnpm keeps a transitive esbuild under node_modules/.pnpm and links
+    // no node_modules/.bin/esbuild, so every vi.mock factory used to fall back to raw (untransformed)
+    // evaluation. With turbo-test's own esbuild available (TURBO_ESBUILD, set by cli.js), the nearest
+    // ancestor that has node_modules is the root: bare imports resolve from there and the prepass
+    // writes into its node_modules.
+    if std::env::var_os("TURBO_ESBUILD").is_some() {
+        let mut d = file.parent();
+        while let Some(dir) = d {
+            if dir.join("node_modules").is_dir() {
+                return Some(dir.to_path_buf());
+            }
+            d = dir.parent();
+        }
+    }
     None
+}
+
+/// The esbuild binary for `root`: the project's own `node_modules/.bin/esbuild` when it has one,
+/// otherwise turbo-test's bundled esbuild (`TURBO_ESBUILD`, resolved by cli.js).
+fn esbuild_bin(root: &Path) -> PathBuf {
+    let local = root.join("node_modules/.bin/esbuild");
+    if local.exists() {
+        return local;
+    }
+    match std::env::var_os("TURBO_ESBUILD") {
+        Some(p) => PathBuf::from(p),
+        None => local,
+    }
 }
 
 /// Nearest ancestor with `node_modules/typescript` — the root `tsc_transform_esm` needs. Unlike
@@ -915,7 +948,7 @@ fn esbuild_bundle_full(
         Some(r) => r.to_path_buf(),
         None => project_root(file)?,
     };
-    let esbuild = root.join("node_modules/.bin/esbuild");
+    let esbuild = esbuild_bin(&root);
     use std::hash::{Hash, Hasher};
     let mtime = std::fs::metadata(file)
         .ok()
@@ -1600,7 +1633,7 @@ process.stdout.write(out.outputText);
 /// (TS/decorators lowered), so this is a pure format conversion.
 fn esbuild_format_cjs(root: &Path, js: &str) -> Option<String> {
     use std::io::Write;
-    let esbuild = root.join("node_modules/.bin/esbuild");
+    let esbuild = esbuild_bin(&root);
     let mut child = std::process::Command::new(&esbuild)
         .current_dir(root)
         .args([
@@ -1728,7 +1761,7 @@ fn native_dep_cjs(file: &Path) -> Option<String> {
 /// esbuild's export getters to be CONFIGURABLE (so spyOn can redefine them). Cached.
 fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
     let root = project_root(file)?;
-    let esbuild = root.join("node_modules/.bin/esbuild");
+    let esbuild = esbuild_bin(&root);
     use std::hash::{Hash, Hasher};
     let raw = std::fs::read_to_string(file).ok()?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -2300,6 +2333,19 @@ fn postprocess_mr_cjs(mut code: String) -> String {
         "var __toESM = ",
         "var __toESM = (m) => (m && m.__esModule ? m : (m && (typeof m === \"object\" || typeof m === \"function\") && !(\"default\" in m) && Object.defineProperty(m, \"default\", { value: m, configurable: true }), m)); var __toESM_unused = ",
     );
+    // esbuild --format=cjs emits an empty `import_meta`, so import.meta.url/dirname/filename were
+    // undefined in every test file (new URL('./x', import.meta.url) threw "Invalid URL"). Fill them
+    // from the CJS wrapper's __filename/__dirname.
+    // (esbuild writes `const` for transforms and `var` for bundles.)
+    let meta_decl = ["const import_meta = {};", "var import_meta = {};"]
+        .into_iter()
+        .find_map(|d| code.find(d).map(|at| (at, d.len())));
+    if let Some((at, len)) = meta_decl {
+        code.replace_range(
+            at..at + len,
+            "var import_meta = { url: \"file://\" + (__filename[0] === \"/\" ? \"\" : \"/\") + __filename.replace(/\\\\/g, \"/\"), filename: __filename, dirname: __dirname };",
+        );
+    }
     code
 }
 
@@ -2327,7 +2373,7 @@ fn is_react_family(spec_or_path: &str) -> bool {
 /// externalized so it's shared. Returns the bundled code. Cached by entry+mtime.
 fn esbuild_bundle_dep_cjs(abs: &Path) -> Option<String> {
     let root = project_root(abs)?;
-    let esbuild = root.join("node_modules/.bin/esbuild");
+    let esbuild = esbuild_bin(&root);
     use std::hash::{Hash, Hasher};
     let mtime = std::fs::metadata(abs).ok().and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis()).unwrap_or(0);
@@ -2792,32 +2838,103 @@ fn write_atomic_bytes(path: &Path, bytes: &[u8]) {
     }
 }
 
+/// A module's wrapped CJS source and V8 code cache, shared by every isolate in the process.
+/// A fresh isolate per file re-loads react, the testing library and the app's own components every
+/// time; each load used to stat/read the transform cache, hash the source, wrap it (a copy), hash
+/// the wrapped text to find its code cache, read that file, and copy the text into the V8 heap.
+/// That was ~15% of a worker's time on a React suite. Sources are leaked on purpose: the process
+/// keeps them for its whole life anyway, and V8 can then reference them as external strings
+/// (no copy, and not counted against the isolate's heap).
+struct ModuleSource {
+    wrapped: &'static str,
+    ascii: bool,
+    cc_path: PathBuf,
+    cc: std::sync::Mutex<Option<&'static [u8]>>,
+}
+
+type SourceKey = (PathBuf, bool, u128, u64);
+
+fn module_source(abs: &Path, prefer_metadata: bool) -> Option<&'static ModuleSource> {
+    static SOURCES: std::sync::OnceLock<std::sync::Mutex<HashMap<SourceKey, &'static ModuleSource>>> =
+        std::sync::OnceLock::new();
+    let meta = std::fs::metadata(abs).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    let key: SourceKey = (abs.to_path_buf(), prefer_metadata, mtime, meta.len());
+    let map = SOURCES.get_or_init(Default::default);
+    if let Some(hit) = map.lock().unwrap().get(&key) {
+        return Some(*hit);
+    }
+    // Transform outside the lock: it can spawn esbuild. Two threads racing here both transform;
+    // the first insert wins and the loser's copy is dropped before it is leaked.
+    let raw = read_transformed(abs, true, prefer_metadata)?;
+    let wrapped = format!("(function (exports, module, require, __filename, __dirname) {{\n{raw}\n}})");
+    let mut map = map.lock().unwrap();
+    if let Some(hit) = map.get(&key) {
+        return Some(*hit);
+    }
+    let cc_path = cc_path(&wrapped);
+    let ascii = wrapped.is_ascii();
+    let source: &'static ModuleSource = Box::leak(Box::new(ModuleSource {
+        wrapped: &*Box::leak(wrapped.into_boxed_str()),
+        ascii,
+        cc_path,
+        cc: std::sync::Mutex::new(None),
+    }));
+    map.insert(key, source);
+    Some(source)
+}
+
+/// The module's source as a V8 string: external (zero copy) when it is ASCII.
+fn source_string<'s>(scope: &mut v8::PinScope<'s, '_>, source: &'static ModuleSource) -> Option<v8::Local<'s, v8::String>> {
+    if source.ascii {
+        if let Some(s) = v8::String::new_external_onebyte_static(scope, source.wrapped.as_bytes()) {
+            return Some(s);
+        }
+    }
+    v8::String::new(scope, source.wrapped)
+}
+
 /// Compile the wrapped CJS source, consuming a persisted bytecode cache when present and
 /// producing one on a miss. Returns the bound Script. Falls back to a plain compile on any
 /// cache miss/reject (V8 recompiles internally and we keep that result).
 fn compile_cjs_cached<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     code: v8::Local<v8::String>,
-    wrapped: &str,
+    module: &'static ModuleSource,
 ) -> Option<v8::Local<'s, v8::Script>> {
     use v8::script_compiler as sc;
-    let path = cc_path(wrapped);
-    if let Ok(bytes) = std::fs::read(&path) {
-        if !bytes.is_empty() {
-            let cached = v8::CachedData::new(&bytes);
-            let mut source = sc::Source::new_with_cached_data(code, None, cached);
-            let compiled = sc::compile(scope, &mut source, sc::CompileOptions::ConsumeCodeCache, sc::NoCacheReason::NoReason);
-            // `bytes` stays alive through this block (Source borrowed it for the compile).
-            if let Some(s) = compiled {
-                return Some(s);
+    let cached_bytes = {
+        let mut slot = module.cc.lock().unwrap();
+        if slot.is_none() {
+            if let Ok(bytes) = std::fs::read(&module.cc_path) {
+                if !bytes.is_empty() {
+                    let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+                    *slot = Some(leaked);
+                }
             }
         }
+        *slot
+    };
+    if let Some(bytes) = cached_bytes {
+        let cached = v8::CachedData::new(bytes);
+        let mut source = sc::Source::new_with_cached_data(code, None, cached);
+        let compiled = sc::compile(scope, &mut source, sc::CompileOptions::ConsumeCodeCache, sc::NoCacheReason::NoReason);
+        if let Some(s) = compiled {
+            return Some(s);
+        }
     }
-    // Miss/reject: compile fresh and persist the bytecode for next time.
+    // Miss/reject: compile fresh and persist the bytecode for next time (and for the process's
+    // other isolates, which would otherwise read the file back).
     let mut source = sc::Source::new(code, None);
     let script = sc::compile(scope, &mut source, sc::CompileOptions::NoCompileOptions, sc::NoCacheReason::NoReason)?;
     if let Some(cc) = script.get_unbound_script(scope).create_code_cache() {
-        write_atomic_bytes(&path, &cc);
+        write_atomic_bytes(&module.cc_path, &cc);
+        let leaked: &'static [u8] = Box::leak(cc.to_vec().into_boxed_slice());
+        *module.cc.lock().unwrap() = Some(leaked);
     }
     Some(script)
 }
@@ -2830,13 +2947,11 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
     if REGISTRY.with(|r| r.borrow().cjs_synth_by_path.contains_key(abs)) {
         return Some(());
     }
-    let Some(raw) = read_transformed(abs, true, prefer_metadata) else {
+    let Some(module) = module_source(abs, prefer_metadata) else {
         eprintln!("  cjs read/transform failed: {}", abs.display());
         return None;
     };
-    let wrapped =
-        format!("(function (exports, module, require, __filename, __dirname) {{\n{raw}\n}})");
-    let code = v8::String::new(scope, &wrapped)?;
+    let code = source_string(scope, module)?;
     // Under --coverage, give the script an origin named after the file so V8's precise-coverage
     // report carries a URL we can map back to source. Off by default (origin None) — zero change.
     let script = {
@@ -2850,7 +2965,7 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
             None
         };
         let compiled = if code_cache_enabled() && origin.is_none() {
-            compile_cjs_cached(tc, code, &wrapped)
+            compile_cjs_cached(tc, code, module)
         } else {
             match &origin {
                 Some(o) => v8::Script::compile(tc, code, Some(o)),
@@ -2873,7 +2988,7 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
                     let wrapped_fb = format!(
                         "(function (exports, module, require, __filename, __dirname) {{\n{src}\n}})"
                     );
-                    if wrapped_fb == wrapped {
+                    if wrapped_fb == module.wrapped {
                         return None; // native wasn't the source (output identical) — no point retrying
                     }
                     let code_fb = v8::String::new(tc, &wrapped_fb)?;
@@ -3656,6 +3771,11 @@ fn load_dep<'s>(scope: &mut v8::PinScope<'s, '_>, dep: &Path) -> Option<()> {
     }
 }
 
+/// V8 requires a module-resolve callback that returns nothing to have an exception pending; an
+/// empty return with none is `Check failed: has_exception()` and aborts the whole process. A
+/// dependency that fails to load (SyntaxError in the file or a mocked factory, unresolvable
+/// import) returns None here after the loaders' own TryCatch swallowed the exception, so
+/// re-throw it (or a generic error) and let instantiation fail as an ordinary load error.
 fn resolve_callback<'s>(
     context: v8::Local<'s, v8::Context>,
     specifier: v8::Local<'s, v8::String>,
@@ -3664,11 +3784,37 @@ fn resolve_callback<'s>(
 ) -> Option<v8::Local<'s, v8::Module>> {
     v8::callback_scope!(unsafe scope, context);
     let spec = specifier.to_rust_string_lossy(scope);
-    let lookup = if is_test_api_module(&spec) {
+    let (found, cause) = {
+        let tc = std::pin::pin!(v8::TryCatch::new(scope));
+        let tc = &mut tc.init();
+        let found = resolve_module_inner(tc, &spec, referrer);
+        let cause = if found.is_none() && tc.has_caught() {
+            tc.exception().map(|e| e.to_rust_string_lossy(tc))
+        } else {
+            None
+        };
+        (found, cause)
+    };
+    match found {
+        Some(g) => Some(v8::Local::new(scope, &g)),
+        None => {
+            let why = cause.map(|c| format!(": {c}")).unwrap_or_default();
+            throw(scope, &format!("failed to load module '{spec}'{why}"));
+            None
+        }
+    }
+}
+
+fn resolve_module_inner(
+    scope: &mut v8::PinScope,
+    spec: &str,
+    referrer: v8::Local<v8::Module>,
+) -> Option<v8::Global<v8::Module>> {
+    let lookup = if is_test_api_module(spec) {
         ensure_vitest_builtin(scope);
         Some(vitest_key())
-    } else if is_node_builtin(&spec) {
-        ensure_node_builtin(scope, &spec);
+    } else if is_node_builtin(spec) {
+        ensure_node_builtin(scope, spec);
         Some(PathBuf::from(format!("<node:{spec}>")))
     } else {
         let ref_hash = referrer.get_identity_hash().get();
@@ -3682,7 +3828,7 @@ fn resolve_callback<'s>(
                 .get(from)
                 .cloned()
                 .or_else(|| from.parent().map(|p| p.to_path_buf()))?;
-            resolve_spec(&spec, &base)
+            resolve_spec(spec, &base)
         })
     };
     let abs = lookup?;
@@ -3694,7 +3840,7 @@ fn resolve_callback<'s>(
             .or_else(|| reg.cjs_synth_by_path.get(&abs))
             .cloned()
     }) {
-        return Some(v8::Local::new(scope, &g));
+        return Some(g);
     }
     // Externalized package not loaded yet (a setup bundle's `import 'react'` etc. under
     // --packages=external): lazy-load it now via the shared loaders so the bundle binds to the
@@ -3709,7 +3855,7 @@ fn resolve_callback<'s>(
         reg.esm_by_path
             .get(&abs)
             .or_else(|| reg.cjs_synth_by_path.get(&abs))
-            .map(|g| v8::Local::new(scope, g))
+            .cloned()
     })
 }
 
@@ -3732,7 +3878,26 @@ extern "C" fn import_meta_callback(
     meta.create_data_property(scope, k.into(), v.into());
 }
 
+/// Every dynamic `import()` promise is handed to the runtime's `__ttTrackImport` so
+/// `vi.dynamicImportSettled()` can wait for the ones still in flight.
 fn dynamic_import_callback<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    host_defined_options: v8::Local<'s, v8::Data>,
+    resource_name: v8::Local<'s, v8::Value>,
+    specifier: v8::Local<'s, v8::String>,
+    import_attributes: v8::Local<'s, v8::FixedArray>,
+) -> Option<v8::Local<'s, v8::Promise>> {
+    let promise = dynamic_import_inner(scope, host_defined_options, resource_name, specifier, import_attributes)?;
+    let global = scope.get_current_context().global(scope);
+    let key = v8::String::new(scope, "__ttTrackImport")?;
+    if let Some(f) = global.get(scope, key.into()).and_then(|v| v8::Local::<v8::Function>::try_from(v).ok()) {
+        let recv = v8::undefined(scope).into();
+        f.call(scope, recv, &[promise.into()]);
+    }
+    Some(promise)
+}
+
+fn dynamic_import_inner<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     _host_defined_options: v8::Local<'s, v8::Data>,
     resource_name: v8::Local<'s, v8::Value>,
@@ -3913,6 +4078,7 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "__fs_mkdirSync", fs_mkdir_sync);
     bind_fn(scope, global, "__fs_rmSync", fs_rm_sync);
     bind_fn(scope, global, "__fs_readdirSync", fs_readdir_sync);
+    bind_fn(scope, global, "__fs_readdirTypes", fs_readdir_types);
     if std::env::var("TURBO_STACK").is_ok() {
         if let Some(code) = v8::String::new(scope, "globalThis.__TT_STACK=true") {
             if let Some(s) = v8::Script::compile(scope, code, None) {
@@ -4059,6 +4225,36 @@ fn fs_readdir_sync(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
                 }
             }
         }
+    }
+    rv.set(arr.into());
+}
+
+/// native fs listing for readdirSync({ withFileTypes }) -> [[name, kind], ...] sorted by name, or
+/// null when the path can't be listed. kind: 0 file, 1 directory, 2 symlink, 3 other.
+fn fs_readdir_types(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let p = args.get(0).to_rust_string_lossy(scope);
+    let Ok(entries) = std::fs::read_dir(&p) else {
+        rv.set_null();
+        return;
+    };
+    let mut list: Vec<(String, i32)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let t = e.file_type().ok()?;
+            let kind = if t.is_symlink() { 2 } else if t.is_dir() { 1 } else if t.is_file() { 0 } else { 3 };
+            Some((name, kind))
+        })
+        .collect();
+    list.sort();
+    let arr = v8::Array::new(scope, 0);
+    for (i, (name, kind)) in list.iter().enumerate() {
+        let pair = v8::Array::new(scope, 2);
+        let n = v8::String::new(scope, name).unwrap();
+        let k = v8::Integer::new(scope, *kind);
+        pair.set_index(scope, 0, n.into());
+        pair.set_index(scope, 1, k.into());
+        arr.set_index(scope, i as u32, pair.into());
     }
     rv.set(arr.into());
 }

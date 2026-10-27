@@ -5,6 +5,33 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+### Added
+
+- `vi.dynamicImportSettled()`: resolves once every in-flight dynamic `import()` has settled. The
+  native import hook reports each import promise to the runtime, which waits (looping, since an
+  import can start another) instead of the method being absent. Part of #79.
+
+### Fixed
+
+- Fresh-isolate mode re-read, re-hashed and re-copied every module's transformed source and V8 code
+  cache for each file (about 15% of a worker's time on a React suite). Wrapped sources and code
+  cache bytes are now kept for the life of the process and handed to V8 as external one-byte strings
+  when ASCII, so every isolate shares one copy. Part of #79.
+- `node:fs` `readdirSync` returned `[]` for any directory reached through
+  `new URL('./dir', import.meta.url)`: the URL polyfill appended a relative reference to the whole
+  base (`file:///a/b.test.ts/./dir`) instead of resolving it (RFC 3986), and `fileURLToPath` did not
+  decode. Both fixed. `readdirSync`/`fs.promises.readdir` now also take URL objects, return `Dirent`s for
+  `{ withFileTypes: true }` (`isFile`/`isDirectory`/`isSymbolicLink`, `name`, `parentPath`), support
+  `{ recursive: true }` and throw `ENOENT`/`ENOTDIR` like Node instead of returning `[]`. Part of #79.
+- SVG elements (and MathML ones, where they have their own interface) had no `style`: only
+  `HTMLElement` carried the inline `CSSStyleDeclaration`, so `svg.style.flex = '1'` threw
+  "Cannot set properties of undefined" — React sets inline styles on `<svg>` icons everywhere.
+  `SVGElement.prototype.style` now returns the same live inline declaration (and `style = text`
+  forwards to `cssText`), defined just before `attributeStyleMap` to keep Chrome's member order.
+  Part of #79.
+- Named ESM imports from a workspace package whose `exports` subpath points at tsc-emitted CommonJS failed with "does not provide an export named". `detect_kind` sniffed the file as ESM because a doc comment contained `import `/`export `; only line-leading statements count now, and `Object.defineProperty(exports, ...)` marks CJS. Part of #79.
+- A module that failed to load (SyntaxError in an imported file or a mock factory) could abort the whole process with `Check failed: has_exception()`: the module resolve callback returned nothing without a pending exception. It now throws "failed to load module ..." so the file is reported as a load error. Part of #79.
+
 ### Release procedure
 
 - Determine missing V8 dependency versions through the official registry API,
