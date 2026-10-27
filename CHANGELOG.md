@@ -5,6 +5,54 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+### Added
+
+- `vi.dynamicImportSettled()`: resolves once every in-flight dynamic `import()` has settled. The
+  native import hook reports each import promise to the runtime, which waits (looping, since an
+  import can start another) instead of the method being absent. Part of #79.
+
+### Fixed
+
+- A worker that runs out of V8 heap no longer aborts the whole run. V8's answer to an exhausted heap
+  is `FatalProcessOutOfMemory`, which kills every worker and loses the results of every file already
+  run (a 529-file suite under isolate reuse died at 2.0 GB with no per-file output). A near-heap-limit
+  guard now terminates the file that hit the limit, reports it as an error
+  (`JavaScript heap out of memory`) and the run continues; in the reuse path the worker's isolate is
+  also replaced once its live heap (after a full GC) passes `TURBO_HEAP_RECYCLE_MB` (default 60% of
+  the limit), so a reused isolate cannot grow until it dies. `TURBO_MAX_HEAP_MB` sets the per-isolate
+  limit, `TURBO_HEAP_LOG` prints the heap after every file and `TURBO_PROGRESS` prints each file's
+  result as it finishes (the summary only prints at the end). Part of #79.
+- Native DOM ownership bookkeeping was O(live wrappers) after every mutating call, so building an
+  n-node tree cost O(n^2) (two React files of a 529-file suite took 164 s and 15 s in a fresh isolate;
+  `sample(1)` put 94% of the worker in `dom_ownership::reconcile_all`). Past 256 live wrappers the
+  reconcile now runs once per wrappers/32 mutating calls and between event-loop tasks, with the
+  touched wrappers pinned meanwhile; small trees keep the exact per-call path. The collected-listener
+  and document sweeps in the same function also ran after every call; they now run only after a GC
+  has run on the isolate. Part of #79.
+- Fresh-isolate mode re-read, re-hashed and re-copied every module's transformed source and V8 code
+  cache for each file (about 15% of a worker's time on a React suite). Wrapped sources and code
+  cache bytes are now kept for the life of the process and handed to V8 as external one-byte strings
+  when ASCII, so every isolate shares one copy. Part of #79.
+- `vi.fn()`/`vi.spyOn()` spies were registered in a strong, never-truncated array, and a spy keeps the
+  arguments and receiver of every call, so under isolate reuse the props, React elements and DOM nodes
+  of every test of every finished file stayed reachable until the worker ended. The registry behind
+  `vi.clearAllMocks`/`resetAllMocks`/`restoreAllMocks` now holds spies weakly and a finished file's
+  spies have their call history cleared at the file boundary. Part of #79.
+- `node:fs` `readdirSync` returned `[]` for any directory reached through
+  `new URL('./dir', import.meta.url)`: the URL polyfill appended a relative reference to the whole
+  base (`file:///a/b.test.ts/./dir`) instead of resolving it (RFC 3986), and `fileURLToPath` did not
+  decode. Both fixed. `readdirSync`/`fs.promises.readdir` now also take URL objects, return `Dirent`s for
+  `{ withFileTypes: true }` (`isFile`/`isDirectory`/`isSymbolicLink`, `name`, `parentPath`), support
+  `{ recursive: true }` and throw `ENOENT`/`ENOTDIR` like Node instead of returning `[]`. Part of #79.
+- SVG elements (and MathML ones, where they have their own interface) had no `style`: only
+  `HTMLElement` carried the inline `CSSStyleDeclaration`, so `svg.style.flex = '1'` threw
+  "Cannot set properties of undefined" — React sets inline styles on `<svg>` icons everywhere.
+  `SVGElement.prototype.style` now returns the same live inline declaration (and `style = text`
+  forwards to `cssText`), defined just before `attributeStyleMap` to keep Chrome's member order.
+  Part of #79.
+- Named ESM imports from a workspace package whose `exports` subpath points at tsc-emitted CommonJS failed with "does not provide an export named". `detect_kind` sniffed the file as ESM because a doc comment contained `import `/`export `; only line-leading statements count now, and `Object.defineProperty(exports, ...)` marks CJS. Part of #79.
+- A module that failed to load (SyntaxError in an imported file or a mock factory) could abort the whole process with `Check failed: has_exception()`: the module resolve callback returned nothing without a pending exception. It now throws "failed to load module ..." so the file is reported as a load error. Part of #79.
+
 ### Release procedure
 
 - Determine missing V8 dependency versions through the official registry API,
