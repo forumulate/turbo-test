@@ -13,6 +13,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ### Fixed
 
+- Native DOM ownership bookkeeping was O(live wrappers) after every mutating call, so building an
+  n-node tree cost O(n^2) (two React files of a 529-file suite took 164 s and 15 s in a fresh isolate;
+  `sample(1)` put 94% of the worker in `dom_ownership::reconcile_all`). Past 256 live wrappers the
+  reconcile now runs once per wrappers/32 mutating calls and between event-loop tasks, with the
+  touched wrappers pinned meanwhile; small trees keep the exact per-call path. The collected-listener
+  and document sweeps in the same function also ran after every call; they now run only after a GC
+  has run on the isolate. Part of #79.
 - `node:fs` `readdirSync` returned `[]` for any directory reached through
   `new URL('./dir', import.meta.url)`: the URL polyfill appended a relative reference to the whole
   base (`file:///a/b.test.ts/./dir`) instead of resolving it (RFC 3986), and `fileURLToPath` did not
